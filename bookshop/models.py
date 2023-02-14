@@ -37,8 +37,8 @@ class Order(models.Model):
     deliv_date = models.DateField()
     state = models.CharField(max_length=10)
 
-    def check_date(self, d):
-        return (self.order_date == d)
+    """def check_date(self, d):
+        return (self.order_date == d)"""
 
     class Meta:
         managed = True
