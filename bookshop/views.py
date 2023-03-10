@@ -1,14 +1,32 @@
 import datetime
-from django.db.models import Min, Max
-from django.shortcuts import render
-
-# Create your views here.
-from rest_framework import viewsets, filters
-from rest_framework.decorators import action, api_view
-from rest_framework.response import Response
-from bookshop.serializers import BookSerializer, UserSerializer, OrderSerializer
-from bookshop.models import Book, User, Order
+from django.shortcuts import render, get_object_or_404
+from django.conf import settings
+from django.contrib.auth import authenticate, login, logout
+from django.http import HttpResponse
 from datetime import date
+from rest_framework import viewsets, status, filters
+from rest_framework.decorators import api_view, action
+from rest_framework.permissions import IsAuthenticatedOrReadOnly, AllowAny
+from rest_framework.response import Response
+from django.db.models import Max, Min
+from rest_framework.views import APIView
+from bookshop.serializers import *
+from bookshop.models import Book, User, Order
+import uuid
+import logging
+from bookshop.permissions import IsAdmin, IsManager
+from rest_framework.generics import get_object_or_404
+from importlib import import_module
+from django.views.decorators.csrf import csrf_exempt
+from django.utils.decorators import method_decorator
+from rest_framework.authentication import SessionAuthentication, BasicAuthentication
+# Create your views here.
+SessionStore = import_module(settings.SESSION_ENGINE).SessionStore
+storage = SessionStore()
+
+"""def logout_view(request):
+    logout(request)
+    # Redirect to a success page."""
 
 
 class BookViewSet (viewsets.ModelViewSet):
@@ -18,6 +36,55 @@ class BookViewSet (viewsets.ModelViewSet):
     # поиск на основе параметров запроса: http://example.com/api/users?search=value
     filter_backends = [filters.SearchFilter]
     search_fields = ['title']
+
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve', 'get_price_range']:
+            permission_classes = [IsAuthenticatedOrReadOnly]
+        elif self.action in ['post', 'create', 'update', 'partial_update', 'destroy']:
+            permission_classes = [IsManager]
+        else:
+            permission_classes = [IsAdmin]
+        return [permission() for permission in permission_classes]
+
+    def list(self, request, *args, **kwargs):
+        srch = self.request.GET.get("search", None)
+        if(srch):
+            queryset = self.get_queryset().filter(title__icontains=srch)
+        else:
+            queryset = self.get_queryset()
+        serializer = BookSerializer(queryset, many=True)
+        return Response(serializer.data)
+
+    def retrieve(self, request, pk=None, **kwargs):
+        queryset = Book.objects.all()
+        book = get_object_or_404(queryset, pk=pk)
+        serializer = BookSerializer(book)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request, *args, **kwargs):
+        book = request.data
+        book_serialized = BookSerializer(book)
+        book_serialized.save()
+        return Response(book_serialized.data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, pk=None, **kwargs):
+        try:
+            b = Book.objects.get(pk=pk)
+        except Book.DoesNotExist:
+            return Response({'message': 'Такая книга не существует'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = BookSerializer(b, data=request.data)
+        #проверяем, что данные содержат все требуемые поля нужных типов
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def destroy(self, request, pk=None, **kwargs):
+        try:
+            Book.objects.get(pk=pk).delete()
+        except Exception:
+            return Response(self.serializer_class.errors, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"status": "ok"}, status=status.HTTP_200_OK)
 
     # метод для получения диапазона цен
     @action(detail=False, methods=['get'])
@@ -43,8 +110,75 @@ class UserViewSet (viewsets.ModelViewSet):
 
 class OrderViewSet (viewsets.ModelViewSet):
     """api endpoint для просмотра и редактирования списка заказов"""
-    queryset = Order.objects.all().order_by('-order_date')
+    #queryset = Order.objects.all().order_by('-order_date')
     serializer_class = OrderSerializer
+
+    def get_permissions(self):
+        if self.action in ['list', 'partial_update', 'destroy', 'create', 'order_states']:
+            permission_classes = [IsAuthenticatedOrReadOnly]
+        elif self.action in ['retrieve', 'update', 'create']:
+            permission_classes = [IsManager]
+        else:
+            permission_classes = [IsAdmin]
+        return [permission() for permission in permission_classes]
+
+    def get_queryset(self):
+        queryset = Order.objects.all().order_by('-order_date')
+        user_id = self.request.query_params.get('user_id')
+        state = self.request.query_params.get('state')
+        if state:
+            queryset = queryset.filter(state=state)
+        if user_id:
+            queryset = queryset.filter(user_id=user_id)
+        return queryset
+
+    @action(detail=False, methods=['get'])
+    def order_states(self, request):
+        states = []
+        for c in Order.OrderState.choices:
+            states.append({'value': c[0], 'label': c[1]})
+        try:
+            return Response(states)
+        except:
+            return Response([], status=status.HTTP_404_NOT_FOUND)
+
+    def list(self, request, *args, **kwargs):
+        serializer = OrderSerializer(self.get_queryset(), many=True)
+        return Response(serializer.data)
+
+    def retrieve(self, request, pk=None, **kwargs):
+        queryset = Order.objects.all()
+        order = get_object_or_404(queryset, pk=pk)
+        serializer = OrderSerializer(order)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request, *args, **kwargs):
+        ord = request.data
+        b = Book.objects.get(title=ord['book_id'])
+        b.in_stock = b.in_stock - ord['amount']
+        b_serializer = BookSerializer(b)
+        b_serializer.save()
+        ord_serialized = OrderSerializer(ord)
+        ord_serialized.save()
+        return Response(ord_serialized.data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, pk=None, **kwargs):
+        try:
+            ord = Order.objects.get(pk=pk)
+        except Order.DoesNotExist:
+            return Response({'message': 'Заказ не существует'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = OrderSerializer(ord, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def destroy(self, request, pk=None, **kwargs):
+        try:
+            Order.objects.get(pk=pk).delete()
+        except Exception:
+            return Response(self.serializer_class.errors, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"status": "ok"}, status=status.HTTP_200_OK)
 
     """метод для отбора заказов за нужную дату"""
     @action(detail=False)
@@ -67,8 +201,65 @@ class OrderViewSet (viewsets.ModelViewSet):
                          })
 
 
+class RegistrationAPIView(APIView):
+    permission_classes = [AllowAny]
+    serializer_class = RegistrationSerializer
+
+    def post(self, request):
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response({"status": "registration successful"}, status=status.HTTP_201_CREATED)
 
 
+class LoginAPIView(APIView):
+    permission_classes = [AllowAny]
+    serializer_class = LoginSerializer
+
+    #@method_decorator(csrf_exempt)
+    def post(self, request):
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        # serializer проверил не только наличие нужных полей, но и наличие такого пользователя
+        response = Response(serializer.data, status=status.HTTP_200_OK)
+        user = User.objects.get(username=serializer.data.get('username'))
+        login(request, user)
+        response.set_cookie(key='sessionid', value=storage.session_key, samesite='None', secure=True)
+        return response
 
 
+class LogoutAPIView(APIView):
+    permission_classes = [AllowAny]
 
+
+    def post(self, request):
+        session_id = request.COOKIES.get('sessionid')
+        if session_id:
+            logout(request)
+            response = Response({"status": "logout"}, status=status.HTTP_200_OK)
+            response.delete_cookie('sessionid')
+            return response
+        return Response({"status": "Unauthorized"}, status=status.HTTP_401_UNAUTHORIZED)
+
+
+class UsersViewSet(viewsets.ModelViewSet):
+    serializer_class = UserSerializer
+
+    def get_permissions(self):
+        if self.action in []:
+            permission_classes = [IsAuthenticatedOrReadOnly]
+        elif self.action in ['retrieve', 'list']:
+            permission_classes = [IsManager]
+        else:
+            permission_classes = [IsAdmin]
+        return [permission() for permission in permission_classes]
+
+    def list(self, request, *args, **kwargs):
+        serializer = UserSerializer(User.objects.all(), many=True)
+        return Response(serializer.data)
+
+    def retrieve(self, request, pk=None, **kwargs):
+        queryset = User.objects.all()
+        usr = get_object_or_404(queryset, pk=pk)
+        serializer = UserSerializer(usr)
+        return Response(serializer.data, status=status.HTTP_200_OK)
