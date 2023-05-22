@@ -34,7 +34,6 @@ class User(AbstractBaseUser, PermissionsMixin):
     # is admin === is_superuser, is manager === is_staff
 
     USERNAME_FIELD = 'username'
-    # REQUIRED_FIELDS = ['full_name']
 
     objects = UserManager()
 

@@ -24,9 +24,6 @@ from rest_framework.authentication import SessionAuthentication, BasicAuthentica
 SessionStore = import_module(settings.SESSION_ENGINE).SessionStore
 storage = SessionStore()
 
-"""def logout_view(request):
-    logout(request)
-    # Redirect to a success page."""
 
 
 class BookViewSet (viewsets.ModelViewSet):
@@ -68,7 +65,10 @@ class BookViewSet (viewsets.ModelViewSet):
         return Response(book_serialized.data, status=status.HTTP_201_CREATED)
 
     def update(self, request, pk=None, **kwargs):
+    
+        print("upd")
         try:
+            print(pk)
             b = Book.objects.get(pk=pk)
         except Book.DoesNotExist:
             return Response({'message': 'Такая книга не существует'}, status=status.HTTP_404_NOT_FOUND)
@@ -81,6 +81,7 @@ class BookViewSet (viewsets.ModelViewSet):
 
     def destroy(self, request, pk=None, **kwargs):
         try:
+            print(pk)
             Book.objects.get(pk=pk).delete()
         except Exception:
             return Response(self.serializer_class.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -114,22 +115,39 @@ class OrderViewSet (viewsets.ModelViewSet):
     serializer_class = OrderSerializer
 
     def get_permissions(self):
-        if self.action in ['list', 'partial_update', 'destroy', 'create', 'order_states']:
+        if self.action in ['list', 'partial_update', 'destroy', 'create','order_states']:
             permission_classes = [IsAuthenticatedOrReadOnly]
-        elif self.action in ['retrieve', 'update', 'create']:
+        elif self.action in ['retrieve', 'update']:
             permission_classes = [IsManager]
         else:
             permission_classes = [IsAdmin]
         return [permission() for permission in permission_classes]
 
     def get_queryset(self):
-        queryset = Order.objects.all().order_by('-order_date')
+        queryset = Order.objects.all().order_by('-order_id')
         user_id = self.request.query_params.get('user_id')
         state = self.request.query_params.get('state')
+        date_type = self.request.query_params.get('date_type')
+        min_d = self.request.query_params.get('minDate')
+        max_d = self.request.query_params.get('maxDate')
+        if user_id:
+            usr = User.objects.get(pk=user_id)
+            if not usr.is_staff:
+                queryset = queryset.filter(user_id=user_id)
         if state:
             queryset = queryset.filter(state=state)
-        if user_id:
-            queryset = queryset.filter(user_id=user_id)
+        if date_type:
+            dat = self.request.query_params.get('dat')
+            if date_type == 'order':
+                queryset = queryset.filter(order_date=dat)
+            if date_type == 'deliv':
+                queryset = queryset.filter(deliv_date=dat)
+            if date_type == 'pay':
+                queryset = queryset.filter(pay_date=dat)
+        if min_d:
+            queryset = queryset.filter(order_date__gte=min_d) # gte: >=
+        if max_d:
+            queryset = queryset.filter(order_date__lte=max_d) # lte: <=
         return queryset
 
     @action(detail=False, methods=['get'])
@@ -154,10 +172,6 @@ class OrderViewSet (viewsets.ModelViewSet):
 
     def post(self, request, *args, **kwargs):
         ord = request.data
-        b = Book.objects.get(title=ord['book_id'])
-        b.in_stock = b.in_stock - ord['amount']
-        b_serializer = BookSerializer(b)
-        b_serializer.save()
         ord_serialized = OrderSerializer(ord)
         ord_serialized.save()
         return Response(ord_serialized.data, status=status.HTTP_201_CREATED)
